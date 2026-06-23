@@ -1,0 +1,50 @@
+{
+  "action_dim": 29,
+  "horizon": 16,
+  "action_keys": [
+    "action.left_arm",
+    "action.right_arm",
+    "action.left_hand",
+    "action.right_hand",
+    "action.waist"
+  ],
+  "state_keys": [
+    "state.left_arm",
+    "state.right_arm",
+    "state.left_hand",
+    "state.right_hand",
+    "state.waist"
+  ],
+  "action_key_dims": {
+    "action.left_arm": 7,
+    "action.right_arm": 7,
+    "action.left_hand": 6,
+    "action.right_hand": 6,
+    "action.waist": 3
+  },
+  "state_key_dims": {
+    "state.left_arm": 7,
+    "state.right_arm": 7,
+    "state.left_hand": 6,
+    "state.right_hand": 6,
+    "state.waist": 3
+  },
+  "dim_groups": {},
+  "normalization_modes": {
+    "action.left_arm": "min_max",
+    "action.right_arm": "min_max",
+    "action.left_hand": "min_max",
+    "action.right_hand": "min_max",
+    "action.waist": "min_max"
+  },
+  "token_order": "scale_major",
+  "source": "starvla_lerobot",
+  "metadata": {
+    "data_root_dir": "/home/zhangfeihong/playground/Data/RoboCasa-GR1/PhysicalAI-Robotics-GR00T-Teleop-Sim/LeRobot",
+    "data_mix": "fourier_gr1_unified_local_1000",
+    "robot_type": "fourier_gr1_arms_waist",
+    "mode": "train",
+    "expected_action_horizon": 16,
+    "expected_action_dim": 29
+  }
+}

@@ -158,6 +158,12 @@ playground/Models
 playground/BuildData
 
 playground/Checkpoints
+!playground/Checkpoints/
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/epoch_027.ckpt
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/config.yaml
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/action_spec.json
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/starvla_base_config.yaml
 playground/Pretrained_models
 playground/Datasets
 
@@ -211,6 +217,13 @@ starVLA/config/frameworks/*
 starVLA/model/modules/sam_model/*
 assets/SAMv2.txt
 playground/*
+!playground/
+!playground/Checkpoints/
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/epoch_027.ckpt
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/config.yaml
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/action_spec.json
+!playground/Checkpoints/var_stage1_robocasa_gr1_e64_aeinit_productvq_g16_s1_2_4_8_16_batch256_rerun/starvla_base_config.yaml
 qwen_talk.md
 assets/R1Pro.py
 examples/SPVLA
@@ -236,6 +249,7 @@ tmp
 */**/*.md
 */*.md
 !examples/**/README.md
+!examples/Robocasa_tabletop/STAGE2_ROBOCASA_RESTART.md
 
 # Whitelist specific docs that should be tracked
 !.github/PULL_REQUEST_TEMPLATE.md
