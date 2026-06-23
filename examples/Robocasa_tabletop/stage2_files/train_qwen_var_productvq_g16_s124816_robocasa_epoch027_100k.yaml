@@ -27,11 +27,17 @@ framework:
     code_condition_dropout: 0.0
     label_smoothing: 0.02
     classifier: per_factor
+  proprio_state:
+    enabled: true
+    state_dim: 58
+    add_context_token: true
+    add_to_pooled: true
 
 datasets:
   vla_data:
     dataset_py: var_stage2_token_dataset
     data_mix: fourier_gr1_unified_local_1000
+    include_state: true
     per_device_batch_size: 32
     num_workers: 4
     shuffle: true

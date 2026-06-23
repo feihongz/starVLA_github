@@ -31,6 +31,7 @@ class QwenVARScaleParallel(QwenVARParallel):
         hidden_size = int(self.qwen_vl_interface.model.config.hidden_size)
         groups = int(self.num_factor_slots)
         head_cfg = self.config.framework.get("parallel_head", {})
+        proprio_cfg = self.config.framework.get("proprio_state", {})
         code_condition_dropout = float(head_cfg.get("code_condition_dropout", head_cfg.get("dropout", 0.0)))
 
         if self.stage1_tokenizer.quantization_mode == "product_vq":
@@ -47,6 +48,26 @@ class QwenVARScaleParallel(QwenVARParallel):
             )
         self.code_condition_norm = nn.LayerNorm(hidden_size)
         self.code_condition_dropout = nn.Dropout(code_condition_dropout)
+
+        self.use_proprio_state = bool(proprio_cfg.get("enabled", False))
+        self.proprio_state_dim = int(proprio_cfg.get("state_dim", 0) or 0)
+        self.proprio_add_context_token = bool(proprio_cfg.get("add_context_token", True))
+        self.proprio_add_to_pooled = bool(proprio_cfg.get("add_to_pooled", True))
+        if self.use_proprio_state:
+            if self.proprio_state_dim <= 0:
+                raise ValueError("framework.proprio_state.state_dim must be > 0 when proprio_state.enabled=true.")
+            proprio_hidden_size = int(proprio_cfg.get("hidden_size", hidden_size))
+            dropout = float(proprio_cfg.get("dropout", head_cfg.get("dropout", 0.0)))
+            self.proprio_state_encoder = nn.Sequential(
+                nn.LayerNorm(self.proprio_state_dim),
+                nn.Linear(self.proprio_state_dim, proprio_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(proprio_hidden_size, hidden_size),
+                nn.LayerNorm(hidden_size),
+            )
+        else:
+            self.proprio_state_encoder = None
 
     def _slot_mask(self, scale_idx: int, device: torch.device) -> torch.Tensor:
         return self.slot_scale_indices.to(device) == int(scale_idx)
@@ -75,6 +96,30 @@ class QwenVARScaleParallel(QwenVARParallel):
         query_pos = self.action_token_queries.index_select(0, slot_indices).float()
         pieces = pieces + query_pos.unsqueeze(0)
         return self.code_condition_dropout(self.code_condition_norm(pieces))
+
+    def _state_tensor(self, examples: List[dict], *, device: torch.device) -> torch.Tensor | None:
+        if not self.use_proprio_state:
+            return None
+        if any("state" not in example for example in examples):
+            raise ValueError(
+                "QwenVARScaleParallel was configured with proprio_state.enabled=true, "
+                "but at least one example is missing `state`. Set datasets.vla_data.include_state=true."
+            )
+        states = []
+        for example in examples:
+            state = np.asarray(example["state"], dtype=np.float32)
+            if state.ndim == 1:
+                state = state[None, :]
+            if state.ndim != 2:
+                raise ValueError(f"Expected state shape [T, D] or [D], got {state.shape}.")
+            states.append(state[-1])
+        state_tensor = torch.as_tensor(np.stack(states, axis=0), device=device, dtype=torch.float32)
+        if state_tensor.shape[-1] != self.proprio_state_dim:
+            raise ValueError(
+                f"State dim mismatch: got {state_tensor.shape[-1]}, expected {self.proprio_state_dim}. "
+                "Check framework.proprio_state.state_dim and the data config state transform."
+            )
+        return state_tensor
 
     def _predict_scale_logits(
         self,
@@ -123,6 +168,21 @@ class QwenVARScaleParallel(QwenVARParallel):
         context_states = outputs.hidden_states[-1].float()
         pooled_context = self._pool_condition(context_states, qwen_inputs.get("attention_mask", None))
         key_padding_mask = self._key_padding_mask(qwen_inputs.get("attention_mask", None))
+        if self.proprio_state_encoder is not None:
+            state_tensor = self._state_tensor(examples, device=context_states.device)
+            state_embedding = self.proprio_state_encoder(state_tensor).to(context_states.dtype)
+            if self.proprio_add_to_pooled:
+                pooled_context = pooled_context + state_embedding
+            if self.proprio_add_context_token:
+                context_states = torch.cat([context_states, state_embedding[:, None, :]], dim=1)
+                if key_padding_mask is not None:
+                    extra_mask = torch.zeros(
+                        key_padding_mask.shape[0],
+                        1,
+                        device=key_padding_mask.device,
+                        dtype=key_padding_mask.dtype,
+                    )
+                    key_padding_mask = torch.cat([key_padding_mask, extra_mask], dim=1)
         return context_states, pooled_context, key_padding_mask
 
     def _predict_token_logits_teacher_forced(self, examples: List[dict], target_tokens: torch.Tensor) -> torch.Tensor:
@@ -226,6 +286,7 @@ class QwenVARScaleParallel(QwenVARParallel):
                     "parallel": True,
                     "scale_wise": True,
                     "classifier": self.parallel_classifier_type,
+                    "proprio_state": self.use_proprio_state,
                 }
                 for _ in converted
             ],

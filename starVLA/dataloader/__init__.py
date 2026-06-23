@@ -80,6 +80,17 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
             )
 
             base_cfg = load_starvla_base_config(stage1_cfg)
+            for optional_key in (
+                "include_state",
+                "obs_image_size",
+                "data_root_dir",
+                "data_mix",
+                "video_backend",
+                "load_all_data_for_training",
+                "delete_pause_frame",
+            ):
+                if cfg.datasets.vla_data.get(optional_key, None) is not None:
+                    base_cfg.datasets.vla_data[optional_key] = cfg.datasets.vla_data[optional_key]
             vla_dataset = VARStage2TokenDataset(
                 base_cfg,
                 stage1_artifact_path=stage1_path,
