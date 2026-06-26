@@ -1,0 +1,181 @@
+{
+  "checkpoint": "playground/Checkpoints/var_stage1_pi05_libero_q99_e32_aeinit_productvq_g16_s1_2_4_8_structemb/best_recon.ckpt",
+  "checkpoint_epoch": 49,
+  "num_samples": 261614,
+  "num_batches": 511,
+  "dataset_len": 261614,
+  "action_spec": {
+    "action_dim": 7,
+    "horizon": 8,
+    "action_keys": [
+      "action.x",
+      "action.y",
+      "action.z",
+      "action.roll",
+      "action.pitch",
+      "action.yaw",
+      "action.gripper"
+    ],
+    "state_keys": [
+      "state.x",
+      "state.y",
+      "state.z",
+      "state.roll",
+      "state.pitch",
+      "state.yaw",
+      "state.pad",
+      "state.gripper"
+    ],
+    "action_key_dims": {
+      "action.x": 1,
+      "action.y": 1,
+      "action.z": 1,
+      "action.roll": 1,
+      "action.pitch": 1,
+      "action.yaw": 1,
+      "action.gripper": 1
+    },
+    "state_key_dims": {
+      "state.x": 1,
+      "state.y": 1,
+      "state.z": 1,
+      "state.roll": 1,
+      "state.pitch": 1,
+      "state.yaw": 1,
+      "state.pad": 1,
+      "state.gripper": 1
+    },
+    "dim_groups": {
+      "position": [
+        0,
+        1,
+        2
+      ],
+      "rotation": [
+        3,
+        4,
+        5
+      ],
+      "gripper": [
+        6
+      ]
+    },
+    "normalization_modes": {
+      "action.x": "q99",
+      "action.y": "q99",
+      "action.z": "q99",
+      "action.roll": "q99",
+      "action.pitch": "q99",
+      "action.yaw": "q99"
+    },
+    "token_order": "scale_major",
+    "source": "starvla_lerobot",
+    "metadata": {
+      "data_root_dir": "playground/Datasets/LEROBOT_LIBERO_DATA",
+      "data_mix": "libero_all_q99",
+      "robot_type": "libero_franka_q99",
+      "mode": "train",
+      "expected_action_horizon": 8,
+      "expected_action_dim": 7
+    }
+  },
+  "model_config": {
+    "action_dim": 7,
+    "seq_len": 8,
+    "codebook_size": 512,
+    "embed_dim": 32,
+    "scales": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "use_dilated": true,
+    "quant_resi": 0.0,
+    "commitment_cost": 0.25,
+    "normalize_codebook_for_lookup": false,
+    "decoder_head_type": "plain",
+    "quantization_mode": "product_vq",
+    "product_codebook_groups": 16,
+    "dim_groups": {
+      "position": [
+        0,
+        1,
+        2
+      ],
+      "rotation": [
+        3,
+        4,
+        5
+      ],
+      "gripper": [
+        6
+      ]
+    },
+    "use_time_embedding": true,
+    "use_action_type_embedding": true,
+    "input_embedding_scale": 1.0
+  },
+  "metrics": {
+    "mse": 5.5208790050343944e-05,
+    "mae": 0.005677841597352179,
+    "rmse": 0.007430261775357847,
+    "vel_mse": 5.144205012349914e-05,
+    "per_dim_mse": [
+      4.8878648563678025e-05,
+      4.46385138659925e-05,
+      6.447370325168092e-05,
+      5.0448743225757504e-05,
+      4.9945520462373615e-05,
+      5.929482305217218e-05,
+      6.87815804226906e-05
+    ],
+    "per_dim_mae": [
+      0.0053655569361283585,
+      0.0050582632481570204,
+      0.006311676619553339,
+      0.00543844435025019,
+      0.005390591283365719,
+      0.005871350684830101,
+      0.006309008153959602
+    ],
+    "group_mse": {
+      "gripper": 6.878158017349683e-05,
+      "position": 5.2663621684935696e-05,
+      "rotation": 5.3229695731990636e-05
+    }
+  },
+  "codebook": {
+    "codebook_size": 512,
+    "used_codes": 512,
+    "usage_ratio": 1.0,
+    "perplexity": 367.228036668386,
+    "total_tokens": 62787360,
+    "scale_usage": [
+      {
+        "scale": 1,
+        "used_codes": 512,
+        "usage_ratio": 1.0,
+        "total_tokens": 4185824
+      },
+      {
+        "scale": 2,
+        "used_codes": 512,
+        "usage_ratio": 1.0,
+        "total_tokens": 8371648
+      },
+      {
+        "scale": 4,
+        "used_codes": 512,
+        "usage_ratio": 1.0,
+        "total_tokens": 16743296
+      },
+      {
+        "scale": 8,
+        "used_codes": 512,
+        "usage_ratio": 1.0,
+        "total_tokens": 33486592
+      }
+    ]
+  }
+}

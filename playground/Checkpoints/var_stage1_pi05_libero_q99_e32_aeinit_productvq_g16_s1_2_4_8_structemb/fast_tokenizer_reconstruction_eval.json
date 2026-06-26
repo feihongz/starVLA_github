@@ -1,0 +1,111 @@
+{
+  "fast_tokenizer_name": "/home/zhangfeihong/.cache/huggingface/hub/models--physical-intelligence--fast/snapshots/ec4d7aa71691cac0b8bed6942be45684db2110f4",
+  "stage1_checkpoint_for_dataset_config": "playground/Checkpoints/var_stage1_pi05_libero_q99_e32_aeinit_productvq_g16_s1_2_4_8_structemb/best_recon.ckpt",
+  "num_samples": 261614,
+  "num_batches": 1022,
+  "dataset_len": 261614,
+  "action_spec": {
+    "action_dim": 7,
+    "horizon": 8,
+    "action_keys": [
+      "action.x",
+      "action.y",
+      "action.z",
+      "action.roll",
+      "action.pitch",
+      "action.yaw",
+      "action.gripper"
+    ],
+    "state_keys": [
+      "state.x",
+      "state.y",
+      "state.z",
+      "state.roll",
+      "state.pitch",
+      "state.yaw",
+      "state.pad",
+      "state.gripper"
+    ],
+    "action_key_dims": {
+      "action.x": 1,
+      "action.y": 1,
+      "action.z": 1,
+      "action.roll": 1,
+      "action.pitch": 1,
+      "action.yaw": 1,
+      "action.gripper": 1
+    },
+    "state_key_dims": {
+      "state.x": 1,
+      "state.y": 1,
+      "state.z": 1,
+      "state.roll": 1,
+      "state.pitch": 1,
+      "state.yaw": 1,
+      "state.pad": 1,
+      "state.gripper": 1
+    },
+    "dim_groups": {
+      "position": [
+        0,
+        1,
+        2
+      ],
+      "rotation": [
+        3,
+        4,
+        5
+      ],
+      "gripper": [
+        6
+      ]
+    },
+    "normalization_modes": {
+      "action.x": "q99",
+      "action.y": "q99",
+      "action.z": "q99",
+      "action.roll": "q99",
+      "action.pitch": "q99",
+      "action.yaw": "q99"
+    },
+    "token_order": "scale_major",
+    "source": "starvla_lerobot",
+    "metadata": {
+      "data_root_dir": "playground/Datasets/LEROBOT_LIBERO_DATA",
+      "data_mix": "libero_all_q99",
+      "robot_type": "libero_franka_q99",
+      "mode": "train",
+      "expected_action_horizon": 8,
+      "expected_action_dim": 7
+    }
+  },
+  "metrics": {
+    "mse": 0.0004009107536673,
+    "mae": 0.015302604537127996,
+    "rmse": 0.02002275589591253,
+    "vel_mse": 0.0004266267253175909,
+    "per_dim_mse": [
+      0.0004861962293384154,
+      0.0004670080002984399,
+      0.0004916097450636101,
+      0.000406082402319403,
+      0.0005025283425529871,
+      0.00033313853932852153,
+      0.00011981201639949195
+    ],
+    "per_dim_mae": [
+      0.017112617856044163,
+      0.0174126291302,
+      0.017167627449175334,
+      0.015274974256846194,
+      0.018216068813720558,
+      0.01512063045631921,
+      0.006813683745872117
+    ],
+    "group_mse": {
+      "gripper": 0.00011981201983836604,
+      "position": 0.0004816046585087883,
+      "rotation": 0.00041391642636295976
+    }
+  }
+}
