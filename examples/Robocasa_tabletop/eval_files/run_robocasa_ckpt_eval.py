@@ -203,6 +203,8 @@ def run_attempt(args: argparse.Namespace, attempt_dir: Path) -> dict:
     server_env = os.environ.copy()
     server_env["CUDA_VISIBLE_DEVICES"] = str(args.server_gpu)
     server_env["PYTHONPATH"] = join_pythonpath(args.repo_root)
+    if args.norm_action_stats_every > 0:
+        server_env["STARVLA_NORM_ACTION_STATS_EVERY"] = str(args.norm_action_stats_every)
 
     sim_env = os.environ.copy()
     sim_env["CUDA_VISIBLE_DEVICES"] = str(args.sim_gpu)
@@ -239,11 +241,13 @@ def run_attempt(args: argparse.Namespace, attempt_dir: Path) -> dict:
         str(args.max_episode_steps),
         "--args.n_action_steps",
         str(args.n_action_steps),
-        "--args.video_out_path",
-        str(video_dir),
         "--args.pretrained_path",
         args.ckpt,
     ]
+    if args.no_video:
+        sim_cmd.extend(["--args.video_out_path", "none"])
+    else:
+        sim_cmd.extend(["--args.video_out_path", str(video_dir)])
 
     server_log = logs_dir / "server.log"
     sim_log = logs_dir / "simulation.log"
@@ -255,12 +259,16 @@ def run_attempt(args: argparse.Namespace, attempt_dir: Path) -> dict:
         sim_rc = run_process(sim_cmd, env=sim_env, log_path=sim_log, timeout_s=args.sim_timeout, cwd=args.repo_root)  # type: ignore[arg-type]
         if sim_rc != 0:
             raise EvalFailed(f"simulation_env.py exited with code {sim_rc}. See {sim_log}")
-        video_report = validate_videos(
-            video_dir,
-            min_frames=args.video_min_frames,
-            max_frames=args.video_sample_frames,
-            min_mean=args.video_min_mean,
-            min_std=args.video_min_std,
+        video_report = (
+            {"skipped": True, "reason": "--no-video"}
+            if args.no_video
+            else validate_videos(
+                video_dir,
+                min_frames=args.video_min_frames,
+                max_frames=args.video_sample_frames,
+                min_mean=args.video_min_mean,
+                min_std=args.video_min_std,
+            )
         )
         return {
             "status": "complete",
@@ -299,7 +307,9 @@ def main() -> int:
     parser.add_argument("--server-idle-timeout", type=int, default=1800)
     parser.add_argument("--use-bf16", action="store_true")
     parser.add_argument("--action-stats-every", type=int, default=0)
+    parser.add_argument("--norm-action-stats-every", type=int, default=0)
     parser.add_argument("--sim-timeout", type=float, default=3600.0)
+    parser.add_argument("--no-video", action="store_true")
     parser.add_argument("--video-sample-frames", type=int, default=60)
     parser.add_argument("--video-min-frames", type=int, default=3)
     parser.add_argument("--video-min-mean", type=float, default=5.0)

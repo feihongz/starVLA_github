@@ -51,6 +51,8 @@ class Args:
     #################################################################################################################
     video_out_path: str = "experiments/libero/logs"  # Path to save videos
     save_videos: bool = True
+    save_only_success_videos: bool = False
+    max_success_videos_per_task: int = -1
     image_views: str = "primary+wrist"  # primary+wrist matches the LIBERO report eval; also supports auto | primary.
     policy_image_size: int = 0  # 0 keeps render size; QwenVAR stage2 training used 224x224 PIL images.
     validate_inputs: bool = True
@@ -170,6 +172,34 @@ def _validate_state(state: np.ndarray, *, task_id: int, episode_idx: int, step: 
         raise RuntimeError(
             f"Non-finite LIBERO state at task={task_id} episode={episode_idx} step={step}: {state}"
         )
+
+
+def _video_path_for_episode(
+    args: Args,
+    *,
+    task_id: int,
+    task_description: str,
+    episode_idx: int,
+    success: bool,
+) -> pathlib.Path | None:
+    if not args.save_videos:
+        return None
+    if args.save_only_success_videos and not success:
+        return None
+
+    root = pathlib.Path(args.video_out_path)
+    suffix = "success" if success else "failure"
+    task_segment = task_description.replace(" ", "_")
+
+    if success and args.max_success_videos_per_task >= 0:
+        task_dir = root / f"task_{task_id:02d}" / "success"
+        task_dir.mkdir(parents=True, exist_ok=True)
+        if len(list(task_dir.glob("*.mp4"))) >= args.max_success_videos_per_task:
+            return None
+        return task_dir / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4"
+
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4"
 
 
 def eval_libero(args: Args) -> None:
@@ -385,15 +415,17 @@ def eval_libero(args: Args) -> None:
                 task_episodes += 1
                 total_episodes += 1
 
-                # Save a replay video of the episode
-                suffix = "success" if done else "failure"
-                task_segment = task_description.replace(" ", "_")
-                if args.save_videos:
-                    imageio.mimwrite(
-                        pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
-                        [np.asarray(x) for x in replay_images],
-                        fps=10,
-                    )
+                # Save a replay video of the episode.
+                video_path = _video_path_for_episode(
+                    args,
+                    task_id=task_id,
+                    task_description=task_description,
+                    episode_idx=episode_idx,
+                    success=bool(done),
+                )
+                if video_path is not None:
+                    imageio.mimwrite(video_path, [np.asarray(x) for x in replay_images], fps=10)
+                    logging.info(f"Saved replay video: {video_path}")
 
                 full_actions = np.stack(full_actions)
                 # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)

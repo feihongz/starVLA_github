@@ -279,7 +279,7 @@ class Args:
     #################################################################################################################
     # Utils
     #################################################################################################################
-    video_out_path: str = (
+    video_out_path: Optional[str] = (
         "experiments/1029_qwenGR00T_fourier_gr1_unified_1000_PnPMilkToMicrowaveClose_gpus_woPretrain_wState/checkpoints/steps_20000_pytorch_model.pt.log/gr1_unified/logs/PnPMilkToMicrowaveClose_GR1ArmsAndWaistFourierHands_Env"  # Path to save videos
     )
 
@@ -302,10 +302,13 @@ def eval_gr1_unified(args: Args) -> None:
         image_size=args.resize_size,
         n_action_steps=args.n_action_steps,
     )
+    video_dir = args.video_out_path
+    if isinstance(video_dir, str) and video_dir.lower() in {"", "none", "null"}:
+        video_dir = None
     run_evaluation(
         env_name=args.env_name,
         model=model,
-        video_dir=args.video_out_path,
+        video_dir=video_dir,
         n_episodes=args.n_episodes,
         n_envs=args.n_envs,
         n_action_steps=args.n_action_steps,

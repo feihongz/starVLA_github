@@ -27,6 +27,8 @@ TRIAL_START="${TRIAL_START:-0}"
 UNNORM_KEY="${UNNORM_KEY:-franka}"
 USE_BF16="${USE_BF16:-1}"
 SAVE_VIDEOS="${SAVE_VIDEOS:-1}"
+SAVE_ONLY_SUCCESS_VIDEOS="${SAVE_ONLY_SUCCESS_VIDEOS:-0}"
+MAX_SUCCESS_VIDEOS_PER_TASK="${MAX_SUCCESS_VIDEOS_PER_TASK:--1}"
 LOG_SUFFIX="${LOG_SUFFIX:-}"
 EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT:-eval_smoke}"
 IMAGE_VIEWS="${IMAGE_VIEWS:-primary+wrist}"
@@ -58,6 +60,7 @@ VIDEO_OUT_PATH="${MODEL_ROOT}/${EVAL_OUTPUT_ROOT}/videos/${TASK_SUITE}/${CKPT_BA
 LOG_DIR="${MODEL_ROOT}/${EVAL_OUTPUT_ROOT}/logs/${TASK_SUITE}"
 LOG_STEM="${CKPT_BASENAME}${LOG_SUFFIX}"
 LOG_PATH="${LOG_DIR}/${LOG_STEM}.log"
+SERVER_LOG_PATH="${LOG_DIR}/${LOG_STEM}.server.log"
 
 mkdir -p "${VIDEO_OUT_PATH}" "${LOG_DIR}"
 
@@ -70,6 +73,12 @@ if [[ "${SAVE_VIDEOS}" == "1" ]]; then
   EVAL_EXTRA_ARGS+=(--args.save-videos)
 else
   EVAL_EXTRA_ARGS+=(--args.no-save-videos)
+fi
+if [[ "${SAVE_ONLY_SUCCESS_VIDEOS}" == "1" ]]; then
+  EVAL_EXTRA_ARGS+=(--args.save-only-success-videos)
+fi
+if [[ "${MAX_SUCCESS_VIDEOS_PER_TASK}" != "-1" ]]; then
+  EVAL_EXTRA_ARGS+=(--args.max-success-videos-per-task "${MAX_SUCCESS_VIDEOS_PER_TASK}")
 fi
 if [[ "${CONSTRAIN_TO_ACTION_TOKENS}" == "1" ]]; then
   EVAL_EXTRA_ARGS+=(--args.constrain-to-action-tokens)
@@ -91,12 +100,12 @@ EVAL_EXTRA_ARGS+=(--args.min-image-std "${MIN_IMAGE_STD}")
 
 echo "[eval] run=${RUN_NAME}"
 echo "[eval] ckpt=${CKPT}"
-echo "[eval] suite=${TASK_SUITE} trials_per_task=${NUM_TRIALS_PER_TASK} max_tasks=${MAX_TASKS} task_start=${TASK_START} task_count=${TASK_COUNT} trial_start=${TRIAL_START} seed=${SEED} image_views=${IMAGE_VIEWS} policy_image_size=${POLICY_IMAGE_SIZE} constrain_to_action_tokens=${CONSTRAIN_TO_ACTION_TOKENS} max_new_tokens=${MAX_NEW_TOKENS} clip_normalized_actions=${CLIP_NORMALIZED_ACTIONS} validate_inputs=${VALIDATE_INPUTS} strict_trial_count=${STRICT_TRIAL_COUNT} output_root=${EVAL_OUTPUT_ROOT}"
+echo "[eval] suite=${TASK_SUITE} trials_per_task=${NUM_TRIALS_PER_TASK} max_tasks=${MAX_TASKS} task_start=${TASK_START} task_count=${TASK_COUNT} trial_start=${TRIAL_START} seed=${SEED} image_views=${IMAGE_VIEWS} policy_image_size=${POLICY_IMAGE_SIZE} constrain_to_action_tokens=${CONSTRAIN_TO_ACTION_TOKENS} max_new_tokens=${MAX_NEW_TOKENS} clip_normalized_actions=${CLIP_NORMALIZED_ACTIONS} validate_inputs=${VALIDATE_INPUTS} strict_trial_count=${STRICT_TRIAL_COUNT} save_only_success_videos=${SAVE_ONLY_SUCCESS_VIDEOS} max_success_videos_per_task=${MAX_SUCCESS_VIDEOS_PER_TASK} output_root=${EVAL_OUTPUT_ROOT}"
 echo "[eval] gpu=${GPU_ID} port=${PORT} mujoco_egl_device_id=${MUJOCO_EGL_DEVICE_ID}"
 echo "[eval] videos=${VIDEO_OUT_PATH}"
 echo "[eval] log=${LOG_PATH}"
 
-CUDA_VISIBLE_DEVICES="${GPU_ID}" "${STARVLA_PYTHON}" "${SERVER_ARGS[@]}" >"${LOG_DIR}/${CKPT_BASENAME}.server.log" 2>&1 &
+CUDA_VISIBLE_DEVICES="${GPU_ID}" "${STARVLA_PYTHON}" "${SERVER_ARGS[@]}" >"${SERVER_LOG_PATH}" 2>&1 &
 SERVER_PID=$!
 
 cleanup() {
@@ -109,20 +118,20 @@ trap cleanup EXIT
 
 echo "[eval] waiting for policy server pid=${SERVER_PID}"
 for _ in $(seq 1 180); do
-  if grep -q "server running" "${LOG_DIR}/${CKPT_BASENAME}.server.log"; then
+  if grep -q "server running" "${SERVER_LOG_PATH}"; then
     break
   fi
   if ! kill -0 "${SERVER_PID}" >/dev/null 2>&1; then
     echo "[eval] policy server exited early; server log:"
-    tail -120 "${LOG_DIR}/${CKPT_BASENAME}.server.log" || true
+    tail -120 "${SERVER_LOG_PATH}" || true
     exit 1
   fi
   sleep 2
 done
 
-if ! grep -q "server running" "${LOG_DIR}/${CKPT_BASENAME}.server.log"; then
+if ! grep -q "server running" "${SERVER_LOG_PATH}"; then
   echo "[eval] policy server did not become ready; server log:"
-  tail -120 "${LOG_DIR}/${CKPT_BASENAME}.server.log" || true
+  tail -120 "${SERVER_LOG_PATH}" || true
   exit 1
 fi
 
