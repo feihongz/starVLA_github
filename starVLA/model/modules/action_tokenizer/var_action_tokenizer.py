@@ -310,11 +310,20 @@ class VARActionTokenizer(nn.Module):
         indices_tensor = torch.stack(indices_groups, dim=-1)
         return z_q_ste, indices_tensor, total_vq_loss
 
-    def quantize_latent(self, latent_full: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
+    def quantize_latent(
+        self,
+        latent_full: torch.Tensor,
+        *,
+        return_cumulative_features: bool = False,
+    ) -> (
+        tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]
+        | tuple[torch.Tensor, list[torch.Tensor], torch.Tensor, list[torch.Tensor]]
+    ):
         f_rest = latent_full.clone()
         f_hat = torch.zeros_like(latent_full)
         total_vq_loss = torch.zeros((), device=latent_full.device, dtype=latent_full.dtype)
         indices_list: list[torch.Tensor] = []
+        cumulative_features: list[torch.Tensor] = []
 
         for scale_idx, scale in enumerate(self.scales):
             z_scale = F.interpolate(f_rest, size=scale, mode="linear", align_corners=False)
@@ -328,7 +337,11 @@ class VARActionTokenizer(nn.Module):
             f_rest = f_rest - refined
             total_vq_loss = total_vq_loss + vq_loss
             indices_list.append(indices)
+            if return_cumulative_features:
+                cumulative_features.append(f_hat)
 
+        if return_cumulative_features:
+            return f_hat, indices_list, total_vq_loss, cumulative_features
         return f_hat, indices_list, total_vq_loss
 
     def decode_features(self, features: torch.Tensor) -> torch.Tensor:
@@ -433,15 +446,35 @@ class VARActionTokenizer(nn.Module):
         self.shared_codebook.weight.index_copy_(0, dead_indices, replacements)
         return int(dead_indices.numel())
 
-    def forward(self, actions: torch.Tensor, *, return_latent: bool = False) -> dict[str, Any]:
+    def forward(
+        self,
+        actions: torch.Tensor,
+        *,
+        return_latent: bool = False,
+        return_scale_recons: bool = False,
+    ) -> dict[str, Any]:
         latent_full = self.encode_features(actions)
+        scale_recons: list[torch.Tensor] | None = None
         if self.quantization_mode == "none":
+            if return_scale_recons:
+                raise ValueError(
+                    "return_scale_recons=True requires quantization_mode to be "
+                    "vq or product_vq; pure AE mode has no multi-scale quantization path."
+                )
             reconstructed_features = latent_full
             token_ids: list[torch.Tensor] = []
             vq_loss = torch.zeros((), device=latent_full.device, dtype=latent_full.dtype)
+        elif return_scale_recons:
+            (
+                reconstructed_features,
+                token_ids,
+                vq_loss,
+                cumulative_features,
+            ) = self.quantize_latent(latent_full, return_cumulative_features=True)
+            scale_recons = [self.decode_features(features) for features in cumulative_features]
         else:
             reconstructed_features, token_ids, vq_loss = self.quantize_latent(latent_full)
-        recon = self.decode_features(reconstructed_features)
+        recon = scale_recons[-1] if scale_recons is not None else self.decode_features(reconstructed_features)
         flat_token_ids = self.flatten_tokens(token_ids) if token_ids else torch.empty(
             actions.shape[0],
             0,
@@ -460,4 +493,7 @@ class VARActionTokenizer(nn.Module):
         }
         if return_latent:
             output["latent"] = latent_full
+        if scale_recons is not None:
+            output["scale_recons"] = scale_recons
+            output["scale_recon_scales"] = list(self.scales)
         return output
