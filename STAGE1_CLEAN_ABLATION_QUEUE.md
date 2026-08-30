@@ -27,7 +27,7 @@ the same canonical config, dataset, seed, and frozen pure-AE initialization.
 The end-to-end order is:
 
 1. verify the fixed LIBERO e32 pure-AE artifact;
-2. verify or train the common 30-epoch RoboCasa e64 pure-AE on GPU 0;
+2. verify or train the common 50-epoch RoboCasa e64 pure-AE on GPU 0;
 3. run all eight two-batch smoke jobs concurrently;
 4. jointly preflight all eight formal jobs;
 5. run all eight 50-epoch jobs concurrently;
@@ -38,7 +38,8 @@ The RoboCasa pure-AE prerequisite must finish before the four RoboCasa methods
 start. This also initializes the RoboCasa dataset/statistics path before eight
 workers begin reading it concurrently. A complete existing pure-AE is reused
 only after artifact validation. An explicit external initialization can be
-provided with `ROBOCASA_STAGE1_INIT_CHECKPOINT`.
+provided with `ROBOCASA_STAGE1_INIT_CHECKPOINT`; its sibling config, history,
+and final checkpoint must prove that the same 50-epoch pure-AE run completed.
 
 ## Preview
 

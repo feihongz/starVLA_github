@@ -174,7 +174,7 @@ static_preflight() {
   if [[ "${DRY_RUN}" != 1 ]]; then
     [[ "$("${PYTHON_BIN}" "${INSPECTOR}" init-checkpoint --benchmark libero --path "${LIBERO_INIT_CHECKPOINT}")" == ready ]] || die "LIBERO pure-AE validation failed."
     if [[ "${ROBOCASA_INIT_IS_EXTERNAL}" == 1 ]]; then
-      [[ "$("${PYTHON_BIN}" "${INSPECTOR}" init-checkpoint --benchmark robocasa --path "${ROBOCASA_INIT_CHECKPOINT}")" == ready ]] || die "Explicit RoboCasa pure-AE validation failed."
+      [[ "$(inspect_pure_ae)" == ready ]] || die "Explicit RoboCasa init must be a complete verified 50-epoch pure-AE artifact."
     fi
   fi
   validate_gpu_layout
@@ -288,7 +288,7 @@ ensure_robocasa_pure_ae() {
   local action
   action="$(inspect_pure_ae)"
   if [[ "${action}" == ready ]]; then
-    log "Verified the shared RoboCasa e64 pure-AE is complete (30/30)."
+    log "Verified the shared RoboCasa e64 pure-AE is complete (50/50)."
     return 0
   fi
   [[ "${action}" == fresh || "${action}" == resume ]] || die "Unexpected RoboCasa pure-AE action: ${action@Q}"
@@ -314,7 +314,7 @@ ensure_robocasa_pure_ae() {
     --data-root "${ROBOCASA_DATA_ROOT}"
     --init-checkpoint "${ROBOCASA_INIT_CHECKPOINT}"
   )
-  [[ "$("${verify_command[@]}")" == ready ]] || die "RoboCasa pure-AE process exited zero but did not produce a verified 30-epoch artifact."
+  [[ "$("${verify_command[@]}")" == ready ]] || die "RoboCasa pure-AE process exited zero but did not produce a verified 50-epoch artifact."
 }
 
 validate_stats_caches() {

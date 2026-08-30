@@ -330,6 +330,11 @@ def inspect_pure_ae(
         raise QueueStateError("pure-AE init must be OUTPUT_DIR/best_recon.ckpt")
     _validate_pure_ae_identity(config_path, output_dir=output_dir, data_root=data_root)
     saved_config = _plain(OmegaConf.load(output_dir / "config.yaml"))
+    target_epochs = int(_nested(saved_config, "train.epochs"))
+    if target_epochs <= 0:
+        raise QueueStateError(
+            f"pure-AE train.epochs must be positive, got {target_epochs}"
+        )
     for required in ("action_spec.json", "starvla_base_config.yaml", "history.json"):
         if not (output_dir / required).is_file():
             raise QueueStateError(f"pure-AE artifact is missing: {output_dir / required}")
@@ -341,9 +346,9 @@ def inspect_pure_ae(
     if final.exists():
         if not final.is_file():
             raise QueueStateError(f"pure-AE final checkpoint is not a file: {final}")
-        _load_checkpoint(final, target_epochs=30, final=True)
+        _load_checkpoint(final, target_epochs=target_epochs, final=True)
         _validate_checkpoint_config(final, saved_config)
-        _validate_history_json(output_dir, 30)
+        _validate_history_json(output_dir, target_epochs)
         return "ready"
     if not resume_enabled:
         raise QueueStateError(
@@ -352,10 +357,12 @@ def inspect_pure_ae(
     latest = output_dir / "latest.ckpt"
     if not latest.is_file():
         raise QueueStateError(f"partial pure-AE output has no latest.ckpt: {output_dir}")
-    epoch = _load_checkpoint(latest, target_epochs=30, final=False)
+    epoch = _load_checkpoint(latest, target_epochs=target_epochs, final=False)
     _validate_checkpoint_config(latest, saved_config)
-    if epoch >= 29:
-        raise QueueStateError("pure-AE latest reached epoch 29 but final.ckpt is missing")
+    if epoch >= target_epochs - 1:
+        raise QueueStateError(
+            f"pure-AE latest reached epoch {target_epochs - 1} but final.ckpt is missing"
+        )
     _validate_history_json(output_dir, epoch + 1)
     return "resume"
 

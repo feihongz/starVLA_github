@@ -175,3 +175,11 @@ def test_dry_run_is_read_only_and_materializes_the_locked_eight_commands(
     )
     assert int(libero_cfg.train.batch_size) == 256
     assert int(robocasa_cfg.train.batch_size) == 256
+
+
+def test_robocasa_pure_ae_target_is_50_epochs() -> None:
+    config = OmegaConf.load(
+        REPO_ROOT
+        / "examples/Robocasa_tabletop/train_files/train_var_stage1_robocasa_gr1_pure_ae_e64.yaml"
+    )
+    assert int(config.train.epochs) == 50

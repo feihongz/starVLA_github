@@ -96,10 +96,10 @@ def test_pure_ae_complete_is_reused_but_partial_requires_resume(tmp_path: Path) 
     data_root.mkdir()
 
     complete = tmp_path / "complete"
-    _prepare_pure_ae_shell(complete, data_root, epoch=29)
+    _prepare_pure_ae_shell(complete, data_root, epoch=49)
     _write_pure_checkpoint(
         complete / "final.ckpt",
-        epoch=29,
+        epoch=49,
         output_dir=complete,
     )
     assert (
