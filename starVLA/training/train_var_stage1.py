@@ -18,6 +18,13 @@ from tqdm import tqdm
 
 from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.model.modules.action_tokenizer import VARActionTokenizer, default_scales
+from starVLA.training.intermediate_supervision import (
+    build_temporal_scale_target,
+    compute_intermediate_loss,
+    compute_mtr_loss,
+    resolve_intermediate_supervision,
+    weighted_dim_mse,
+)
 
 
 def collate_action_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -28,6 +35,14 @@ def collate_action_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     if "actions_raw" in batch[0]:
         output["actions_raw"] = torch.stack([item["actions_raw"] for item in batch], dim=0)
     return output
+
+
+def merge_config_overrides(cfg: Any, overrides: list[str] | None) -> Any:
+    """Merge repeatable CLI key=value overrides into a loaded OmegaConf."""
+
+    if not overrides:
+        return cfg
+    return OmegaConf.merge(cfg, OmegaConf.from_dotlist(list(overrides)))
 
 
 def load_starvla_base_config(cfg: Any) -> Any:
@@ -68,22 +83,6 @@ def resolve_scales(scales_cfg: Any, seq_len: int) -> list[int]:
     if scales_cfg in (None, "auto"):
         return default_scales(seq_len)
     return [int(item) for item in scales_cfg]
-
-
-def build_temporal_scale_target(actions: torch.Tensor, scale: int) -> torch.Tensor:
-    """Build a scale-matched coarse trajectory target in normalized action space."""
-
-    if actions.ndim != 3:
-        raise ValueError(f"Expected actions with shape [B, H, D], got {tuple(actions.shape)}.")
-
-    horizon = actions.shape[1]
-    if scale <= 0 or scale > horizon:
-        raise ValueError(f"Scale must be within [1, {horizon}], got {scale}.")
-
-    action_channels = actions.transpose(1, 2)
-    coarse = F.adaptive_avg_pool1d(action_channels, output_size=scale)
-    target = F.interpolate(coarse, size=horizon, mode="linear", align_corners=False)
-    return target.transpose(1, 2).contiguous()
 
 
 def save_json(path: Path, payload: Any) -> None:
@@ -237,53 +236,6 @@ def set_encoder_decoder_trainable(model: VARActionTokenizer, trainable: bool) ->
             parameter.requires_grad = trainable
 
 
-def weighted_dim_mse(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-    *,
-    dim_groups: dict[str, list[int]],
-    gripper_weight: float = 1.0,
-    group_weights: dict[str, float] | None = None,
-    sample_weights: torch.Tensor | None = None,
-    time_weights: torch.Tensor | None = None,
-    weight_normalization: str = "mean",
-) -> torch.Tensor:
-    group_weights = dict(group_weights or {})
-    if gripper_weight != 1.0 and "gripper" in dim_groups:
-        group_weights.setdefault("gripper", float(gripper_weight))
-
-    if not group_weights and sample_weights is None and time_weights is None:
-        return F.mse_loss(pred, target)
-
-    if weight_normalization not in {"mean", "none"}:
-        raise ValueError(f"weight_normalization must be 'mean' or 'none', got {weight_normalization!r}.")
-
-    dim_weights = torch.ones(pred.shape[-1], dtype=pred.dtype, device=pred.device)
-    for group_name, group_weight in group_weights.items():
-        if group_name not in dim_groups:
-            raise ValueError(f"Unknown action dim group {group_name!r}. Available groups: {sorted(dim_groups)}")
-        dim_weights[dim_groups[group_name]] = float(group_weight)
-
-    weight = dim_weights.view(1, 1, -1)
-    if sample_weights is not None:
-        if sample_weights.ndim != 1 or sample_weights.shape[0] != pred.shape[0]:
-            raise ValueError(
-                f"Expected sample_weights with shape [{pred.shape[0]}], got {tuple(sample_weights.shape)}."
-            )
-        weight = weight * sample_weights.to(device=pred.device, dtype=pred.dtype).view(-1, 1, 1)
-    if time_weights is not None:
-        if time_weights.ndim != 1 or time_weights.shape[0] != pred.shape[1]:
-            raise ValueError(f"Expected time_weights with shape [{pred.shape[1]}], got {tuple(time_weights.shape)}.")
-        weight = weight * time_weights.to(device=pred.device, dtype=pred.dtype).view(1, -1, 1)
-
-    err = (pred - target).pow(2)
-    if weight_normalization == "none":
-        denom = torch.as_tensor(err.numel(), device=pred.device, dtype=pred.dtype)
-    else:
-        denom = weight.expand_as(err).sum()
-    return (err * weight).sum() / denom.clamp_min(1e-6)
-
-
 def loss_group_weights(
     cfg: Any,
     prefix: str,
@@ -301,63 +253,6 @@ def loss_group_weights(
         if cfg.loss.get(key, None) is not None and (dim_groups is None or group_name in dim_groups):
             weights[group_name] = float(cfg.loss[key])
     return weights
-
-
-def compute_mtr_loss(
-    actions: torch.Tensor,
-    scale_recons: list[torch.Tensor],
-    scales: list[int],
-    *,
-    dim_groups: dict[str, list[int]],
-    gripper_weight: float,
-    group_weights: dict[str, float] | None = None,
-    sample_weights: torch.Tensor | None = None,
-    time_weights: torch.Tensor | None = None,
-    weight_normalization: str = "mean",
-    scale_loss_weights: dict[int, float] | None = None,
-) -> tuple[torch.Tensor, dict[int, torch.Tensor]]:
-    """Compute an optionally scale-weighted MTR loss over intermediate scales."""
-
-    if len(scale_recons) != len(scales):
-        raise ValueError(
-            f"Expected one reconstruction per scale, got {len(scale_recons)} "
-            f"reconstructions for scales={scales}."
-        )
-
-    per_scale_losses: dict[int, torch.Tensor] = {}
-    for scale, scale_recon in zip(scales, scale_recons, strict=True):
-        scale_target = build_temporal_scale_target(actions, scale)
-        per_scale_losses[int(scale)] = weighted_dim_mse(
-            scale_recon,
-            scale_target,
-            dim_groups=dim_groups,
-            gripper_weight=gripper_weight,
-            group_weights=group_weights,
-            sample_weights=sample_weights,
-            time_weights=time_weights,
-            weight_normalization=weight_normalization,
-        )
-
-    if not per_scale_losses:
-        return torch.zeros((), device=actions.device, dtype=actions.dtype), per_scale_losses
-
-    configured_weights = {int(scale): float(weight) for scale, weight in (scale_loss_weights or {}).items()}
-    unknown_scales = sorted(set(configured_weights) - set(per_scale_losses))
-    if unknown_scales:
-        raise ValueError(f"MTR scale_loss_weights contains unknown intermediate scales: {unknown_scales}.")
-    weights = []
-    losses = []
-    for scale, current_loss in per_scale_losses.items():
-        weight = configured_weights.get(scale, 1.0)
-        if weight < 0.0:
-            raise ValueError(f"MTR scale weight must be non-negative, got scale={scale}, weight={weight}.")
-        weights.append(weight)
-        losses.append(current_loss)
-    weight_sum = sum(weights)
-    if weight_sum <= 0.0:
-        raise ValueError("At least one MTR scale weight must be positive.")
-    weight_tensor = actions.new_tensor(weights)
-    return (torch.stack(losses) * weight_tensor).sum() / weight_sum, per_scale_losses
 
 
 def compute_vq_weight(epoch: int, *, target_weight: float, warmup_epochs: int) -> float:
@@ -802,7 +697,6 @@ def train(cfg: Any) -> None:
     if static_task_weights:
         save_json(output_dir / "static_task_balance_weights.json", static_task_weights)
     save_json(output_dir / "action_spec.json", action_spec.to_dict())
-    OmegaConf.save(cfg, output_dir / "config.yaml", resolve=True)
     OmegaConf.save(base_cfg, output_dir / "starvla_base_config.yaml", resolve=True)
 
     loader = DataLoader(
@@ -838,21 +732,31 @@ def train(cfg: Any) -> None:
         input_embedding_scale=float(cfg.model.get("input_embedding_scale", 1.0)),
     ).to(device)
 
-    scale_weight = float(cfg.loss.get("scale_weight", 0.0))
-    if scale_weight < 0.0:
-        raise ValueError(f"loss.scale_weight must be non-negative, got {scale_weight}.")
-    if scale_weight > 0.0:
+    intermediate = resolve_intermediate_supervision(
+        cfg.loss,
+        dim_groups=action_spec.dim_groups,
+        available_scales=list(model.scales[:-1]),
+    )
+    if intermediate.enabled:
         if model.quantization_mode == "none":
             raise ValueError(
-                "loss.scale_weight > 0 requires a quantized tokenizer; "
+                "Intermediate supervision requires a quantized tokenizer; "
                 "quantization_mode=none does not produce intermediate scales."
             )
         if not model.scales or model.scales[-1] != model.seq_len:
             raise ValueError(
-                "MTR loss requires the final tokenizer scale to equal the action horizon. "
+                "Intermediate supervision requires the final tokenizer scale to equal "
+                "the action horizon. "
                 f"Got scales={model.scales}, seq_len={model.seq_len}."
             )
-    intermediate_scales = list(model.scales[:-1]) if scale_weight > 0.0 else []
+    intermediate_scales = list(model.scales[:-1]) if intermediate.enabled else []
+    cfg.loss.intermediate = OmegaConf.create(intermediate.to_dict())
+    OmegaConf.save(cfg, output_dir / "config.yaml", resolve=True)
+    print(
+        "Resolved intermediate supervision: "
+        f"mode={intermediate.mode}, weight={intermediate.weight}, "
+        f"source={intermediate.resolved_from}, scales={intermediate_scales}."
+    )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -948,6 +852,7 @@ def train(cfg: Any) -> None:
             "vel_loss": 0.0,
             "vq_loss": 0.0,
             "scale_loss": 0.0,
+            "intermediate_to_base_ratio": 0.0,
             "total_loss": 0.0,
             "sample_weight_mean": 0.0,
         }
@@ -985,7 +890,7 @@ def train(cfg: Any) -> None:
             )
             time_weights = build_time_weights(actions.shape[1], cfg=cfg, device=device, dtype=actions.dtype)
 
-            out = model(actions, return_scale_recons=scale_weight > 0.0)
+            out = model(actions, return_scale_recons=intermediate.enabled)
             recon = out["recon"]
             recon_loss = weighted_dim_mse(
                 recon,
@@ -1006,29 +911,28 @@ def train(cfg: Any) -> None:
                     dim_groups=action_spec.dim_groups,
                 )
 
-            scale_loss = torch.zeros((), device=device, dtype=actions.dtype)
+            intermediate_loss = torch.zeros((), device=device, dtype=actions.dtype)
             per_scale_losses: dict[int, torch.Tensor] = {}
-            if scale_weight > 0.0:
+            if intermediate.enabled:
                 scale_recons = out.get("scale_recons")
                 scale_recon_scales = out.get("scale_recon_scales")
                 if scale_recons is None or scale_recon_scales != list(model.scales):
                     raise RuntimeError(
                         "Tokenizer did not return scale reconstructions in model.scales order."
                     )
-                scale_loss, per_scale_losses = compute_mtr_loss(
+                intermediate_loss, per_scale_losses = compute_intermediate_loss(
                     actions,
                     scale_recons[:-1],
                     intermediate_scales,
+                    mode=intermediate.mode,
                     dim_groups=action_spec.dim_groups,
-                    gripper_weight=float(cfg.loss.get("gripper_scale_weight", 0.0)),
-                    group_weights=loss_group_weights(cfg, "scale", action_spec.dim_groups),
+                    group_weights=intermediate.group_weights,
                     sample_weights=sample_weights,
-                    time_weights=time_weights,
+                    time_weights=(
+                        None if intermediate.mode == "mint_paper_dct" else time_weights
+                    ),
                     weight_normalization=weight_normalization,
-                    scale_loss_weights={
-                        int(scale): float(weight)
-                        for scale, weight in cfg.loss.get("scale_loss_weights", {}).items()
-                    },
+                    scale_weights=intermediate.scale_weights,
                 )
 
             if actions.shape[1] > 1:
@@ -1055,13 +959,14 @@ def train(cfg: Any) -> None:
             else:
                 jerk_loss = torch.zeros((), device=device, dtype=actions.dtype)
 
-            total_loss = (
+            base_loss = (
                 float(cfg.loss.get("recon_weight", 1.0)) * recon_loss
                 + float(cfg.loss.get("vel_weight", 0.5)) * vel_loss
                 + float(cfg.loss.get("jerk_weight", 0.0)) * jerk_loss
                 + vq_weight * out["vq_loss"]
-                + scale_weight * scale_loss
             )
+            weighted_intermediate_loss = intermediate.weight * intermediate_loss
+            total_loss = base_loss + weighted_intermediate_loss
 
             optimizer.zero_grad(set_to_none=True)
             total_loss.backward()
@@ -1073,9 +978,12 @@ def train(cfg: Any) -> None:
             totals["recon_loss"] += float(recon_loss.detach().cpu())
             totals["vel_loss"] += float(vel_loss.detach().cpu())
             totals["vq_loss"] += float(out["vq_loss"].detach().cpu())
-            totals["scale_loss"] += float(scale_loss.detach().cpu())
+            totals["scale_loss"] += float(intermediate_loss.detach().cpu())
             for scale, current_loss in per_scale_losses.items():
                 totals[f"scale_loss_s{scale}"] += float(current_loss.detach().cpu())
+            totals["intermediate_to_base_ratio"] += float(
+                (weighted_intermediate_loss.detach() / base_loss.detach().clamp_min(1e-12)).cpu()
+            )
             totals["total_loss"] += float(total_loss.detach().cpu())
             if sample_weights is not None:
                 totals["sample_weight_mean"] += float(sample_weights.detach().mean().cpu())
@@ -1087,10 +995,13 @@ def train(cfg: Any) -> None:
             if flat_tokens.numel() > 0:
                 code_counts += torch.bincount(flat_tokens, minlength=model.codebook_size)
 
-            progress.set_postfix(
-                recon=f"{totals['recon_loss'] / batches:.5f}",
-                vq=f"{totals['vq_loss'] / batches:.5f}",
-            )
+            postfix = {
+                "recon": f"{totals['recon_loss'] / batches:.5f}",
+                "vq": f"{totals['vq_loss'] / batches:.5f}",
+            }
+            if intermediate.enabled:
+                postfix["inter"] = f"{totals['scale_loss'] / batches:.5f}"
+            progress.set_postfix(**postfix)
 
             max_batches = int(cfg.train.get("max_batches_per_epoch", 0))
             if max_batches > 0 and batches >= max_batches:
@@ -1100,6 +1011,23 @@ def train(cfg: Any) -> None:
             raise RuntimeError("No batches were produced by the Stage 1 dataloader.")
 
         epoch_record = {key: value / batches for key, value in totals.items()}
+        epoch_record["intermediate_loss"] = epoch_record["scale_loss"]
+        epoch_record["intermediate_mode"] = intermediate.mode
+        epoch_record["intermediate_weight"] = intermediate.weight
+        epoch_record["intermediate_weighted_loss"] = (
+            intermediate.weight * epoch_record["intermediate_loss"]
+        )
+        recon_contribution = (
+            float(cfg.loss.get("recon_weight", 1.0)) * epoch_record["recon_loss"]
+        )
+        epoch_record["intermediate_to_recon_ratio"] = (
+            epoch_record["intermediate_weighted_loss"]
+            / max(recon_contribution, 1e-12)
+        )
+        for scale in intermediate_scales:
+            epoch_record[f"intermediate_loss_s{scale}"] = epoch_record[
+                f"scale_loss_s{scale}"
+            ]
         used_codes = int((code_counts > 0).sum().item())
         usage_ratio = used_codes / float(model.codebook_size)
         epoch_record.update(
@@ -1219,8 +1147,16 @@ def train(cfg: Any) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train VAR Stage 1 action tokenizer.")
     parser.add_argument("--config_yaml", type=str, required=True)
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Repeatable OmegaConf dot-list override (for example loss.intermediate.weight=0.05).",
+    )
     args = parser.parse_args()
     cfg = OmegaConf.load(args.config_yaml)
+    cfg = merge_config_overrides(cfg, args.override)
     train(cfg)
 
 
