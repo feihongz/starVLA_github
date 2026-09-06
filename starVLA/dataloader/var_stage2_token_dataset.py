@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import gc
+import warnings
 from pathlib import Path
 from typing import Any
-import warnings
 
 import numpy as np
 import torch
@@ -129,11 +130,28 @@ class VARStage2TokenDataset(Dataset):
         if not cache_path.exists():
             raise FileNotFoundError(f"Stage 2 token cache not found: {cache_path}")
         try:
-            cache = torch.load(cache_path, map_location="cpu", weights_only=False)
+            # Token caches can be tens of GiB. Mapping tensor storages avoids
+            # materializing one full private copy in every distributed rank.
+            cache = torch.load(cache_path, map_location="cpu", weights_only=False, mmap=True)
         except TypeError:
             cache = torch.load(cache_path, map_location="cpu")
+        except RuntimeError as exc:
+            # mmap requires torch's zipfile serialization. Preserve support for
+            # older cache files while surfacing unrelated load failures.
+            if "mmap can only be used" not in str(exc):
+                raise
+            try:
+                cache = torch.load(cache_path, map_location="cpu", weights_only=False)
+            except TypeError:
+                cache = torch.load(cache_path, map_location="cpu")
         if not isinstance(cache, dict):
             raise ValueError(f"Expected token cache to be a dict, got {type(cache).__name__}.")
+        # Stage 2 resolves metadata from the source dataset and never consumes
+        # the per-window metadata list stored by the cache builder.
+        sample_metadata = cache.pop("sample_metadata", None)
+        if sample_metadata is not None:
+            del sample_metadata
+            gc.collect()
         cache["path"] = str(cache_path)
         return cache
 

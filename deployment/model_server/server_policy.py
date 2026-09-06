@@ -5,7 +5,6 @@
 import argparse
 import logging
 import os
-import socket
 
 from deployment.model_server.policy_wrapper import PolicyServerWrapper
 from deployment.model_server.tools.websocket_policy_server import WebsocketPolicyServer
@@ -22,29 +21,27 @@ def main(args) -> None:
         ckpt_path=args.ckpt_path,
         device="cuda",
         use_bf16=args.use_bf16,
+        unnorm_key=args.unnorm_key,
     )
-
-    hostname = socket.gethostname()
-    local_ip = socket.gethostbyname(hostname)
-    logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
     # start websocket server; wrapper.metadata is sent at handshake.
     server = WebsocketPolicyServer(
         policy=wrapper,
-        host="0.0.0.0",
+        host=args.host,
         port=args.port,
         idle_timeout=args.idle_timeout,
         metadata=wrapper.metadata,
     )
-    logging.info("server running ... metadata=%s", wrapper.metadata)
     server.serve_forever()
 
 
 def build_argparser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt_path", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct")
+    parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=10093)
     parser.add_argument("--use_bf16", action="store_true")
+    parser.add_argument("--unnorm_key", type=str, default=None)
     parser.add_argument("--idle_timeout", type=int, default=1800, help="Idle timeout in seconds, -1 means never close")
     return parser
 
@@ -65,7 +62,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
     parser = build_argparser()
     args = parser.parse_args()
-    if os.getenv("DEBUG", False):
+    if os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
         print("🔍 DEBUGPY is enabled")
         start_debugpy_once()
     main(args)

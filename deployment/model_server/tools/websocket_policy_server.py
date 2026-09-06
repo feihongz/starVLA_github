@@ -5,13 +5,16 @@
 import asyncio
 import logging
 import time
-import traceback
 
 import websockets.asyncio.server
+import websockets.exceptions
 import websockets.frames
 
 # from openpi_client import base_policy as _base_policy
 from . import msgpack_numpy
+
+
+_PROTOCOL_IO_TIMEOUT_SECONDS = 5.0
 
 
 class WebsocketPolicyServer:
@@ -46,7 +49,14 @@ class WebsocketPolicyServer:
             self._port,
             compression=None,
             max_size=None,
+            close_timeout=_PROTOCOL_IO_TIMEOUT_SECONDS,
         ) as server:
+            logging.info(
+                "POLICY_SERVER_READY host=%s port=%s metadata=%s",
+                self._host,
+                self._port,
+                self._metadata,
+            )
             if self._idle_timeout > 0:
                 await self._idle_watchdog(server)
             else:
@@ -66,24 +76,170 @@ class WebsocketPolicyServer:
         logging.info(f"Connection from {websocket.remote_address} opened")
         packer = msgpack_numpy.Packer()
 
-        await websocket.send(packer.pack(self._metadata))
+        try:
+            await asyncio.wait_for(
+                websocket.send(packer.pack(self._metadata)),
+                timeout=_PROTOCOL_IO_TIMEOUT_SECONDS,
+            )
+        except websockets.exceptions.ConnectionClosed:
+            logging.info(
+                "Connection from %s closed during metadata handshake",
+                websocket.remote_address,
+            )
+            return
+        except Exception:
+            logging.exception(
+                "Failed to send metadata to %s", websocket.remote_address
+            )
+            await self._safe_close(
+                websocket,
+                code=websockets.frames.CloseCode.INTERNAL_ERROR,
+                reason="METADATA_HANDSHAKE_ERROR",
+            )
+            return
 
         while True:
             try:
-                msg = msgpack_numpy.unpackb(await websocket.recv())
-                self._last_active = time.time()  # Refresh active time on each received message
-                ret = self._route_message(msg)  # route message
-                await websocket.send(packer.pack(ret))
-            except websockets.ConnectionClosed:
+                frame = await websocket.recv()
+            except websockets.exceptions.ConnectionClosed:
                 logging.info(f"Connection from {websocket.remote_address} closed")
-                break
-            except Exception:
-                await websocket.send(traceback.format_exc())
-                await websocket.close(
-                    code=websockets.frames.CloseCode.INTERNAL_ERROR,
-                    reason="Internal server error. Traceback included in previous frame.",
+                return
+
+            self._last_active = time.time()
+            try:
+                msg = msgpack_numpy.unpackb(frame)
+            except Exception as exc:
+                logging.warning(
+                    "Invalid msgpack request from %s: %s: %s",
+                    websocket.remote_address,
+                    type(exc).__name__,
+                    exc,
                 )
-                raise
+                await self._send_error_and_close(
+                    websocket,
+                    packer,
+                    code="INVALID_MSGPACK",
+                    error_type="ProtocolError",
+                    message="Request must be a valid binary msgpack object",
+                    close_code=websockets.frames.CloseCode.INVALID_DATA,
+                )
+                return
+
+            if type(msg) is not dict:
+                await self._send_error_and_close(
+                    websocket,
+                    packer,
+                    code="INVALID_MESSAGE_TYPE",
+                    error_type="TypeError",
+                    message="Decoded request must be a dict",
+                    close_code=websockets.frames.CloseCode.UNSUPPORTED_DATA,
+                    details={"message_type": type(msg).__name__},
+                )
+                return
+
+            try:
+                ret = self._route_message(msg)
+                packed_ret = packer.pack(ret)
+            except Exception:
+                logging.exception(
+                    "Unexpected request-routing error from %s",
+                    websocket.remote_address,
+                )
+                await self._send_error_and_close(
+                    websocket,
+                    packer,
+                    code="INTERNAL_SERVER_ERROR",
+                    error_type="RuntimeError",
+                    message="Policy server failed to route or encode the request",
+                    close_code=websockets.frames.CloseCode.INTERNAL_ERROR,
+                )
+                return
+
+            try:
+                await websocket.send(packed_ret)
+            except websockets.exceptions.ConnectionClosed:
+                logging.info(f"Connection from {websocket.remote_address} closed")
+                return
+            except Exception:
+                logging.exception(
+                    "Failed to send response to %s", websocket.remote_address
+                )
+                await self._safe_close(
+                    websocket,
+                    code=websockets.frames.CloseCode.INTERNAL_ERROR,
+                    reason="RESPONSE_SEND_ERROR",
+                )
+                return
+
+    async def _send_error_and_close(
+        self,
+        websocket: websockets.asyncio.server.ServerConnection,
+        packer: msgpack_numpy.Packer,
+        *,
+        code: str,
+        error_type: str,
+        message: str,
+        close_code: websockets.frames.CloseCode,
+        details: dict | None = None,
+    ) -> None:
+        error = {"code": code, "type": error_type, "message": message}
+        if details:
+            error.update(details)
+        response = {
+            "status": "error",
+            "ok": False,
+            "type": "protocol_error",
+            "request_id": "default",
+            "error": error,
+        }
+        try:
+            await asyncio.wait_for(
+                websocket.send(packer.pack(response)),
+                timeout=_PROTOCOL_IO_TIMEOUT_SECONDS,
+            )
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        except Exception:
+            logging.exception(
+                "Failed to send protocol error %s to %s",
+                code,
+                websocket.remote_address,
+            )
+        finally:
+            await self._safe_close(websocket, code=close_code, reason=code)
+
+    async def _safe_close(
+        self,
+        websocket: websockets.asyncio.server.ServerConnection,
+        *,
+        code: websockets.frames.CloseCode,
+        reason: str,
+    ) -> None:
+        try:
+            await asyncio.wait_for(
+                websocket.close(code=code, reason=reason),
+                timeout=_PROTOCOL_IO_TIMEOUT_SECONDS,
+            )
+            return
+        except websockets.exceptions.ConnectionClosed:
+            return
+        except Exception:
+            logging.exception(
+                "Failed to close connection from %s cleanly",
+                websocket.remote_address,
+            )
+
+        # A peer that doesn't participate in the closing handshake must not
+        # keep a server-side transport alive indefinitely.
+        transport = getattr(websocket, "transport", None)
+        if transport is not None:
+            try:
+                transport.abort()
+            except Exception:
+                logging.exception(
+                    "Failed to abort connection from %s",
+                    websocket.remote_address,
+                )
 
     # route logic: recognize request from client
     def _route_message(self, msg: dict) -> dict:
@@ -92,7 +248,8 @@ class WebsocketPolicyServer:
         - Supports messages of form:
             {"type": "ping|init|infer|reset", "request_id": "...", "payload": {...}}
           or a flat dict (will be treated as payload).
-        - Does NOT raise inside this function: all exceptions are caught and encoded in response.
+        - The handler validates that msg is a dict before calling this method.
+        - Policy exceptions are caught and encoded in the response.
         """
         req_id = msg.get("request_id", "default")
         mtype = msg.get("type", "infer")  # default = infer
@@ -105,19 +262,23 @@ class WebsocketPolicyServer:
         # infer --> framework.predict_action
         elif mtype == "infer" or mtype == "predict_action":
             # Basic payload sanity
-            if not isinstance(payload, dict):
+            if type(payload) is not dict:
                 return {
                     "status": "error",
                     "ok": False,
                     "type": "inference_result",
                     "request_id": req_id,
-                    "error": {"message": "Payload must be a dict", "payload_type": str(type(payload))},
+                    "error": {
+                        "code": "INVALID_PAYLOAD",
+                        "type": "TypeError",
+                        "message": "Payload must be a dict",
+                        "payload_type": str(type(payload)),
+                    },
                 }
             try:
                 output_dict = self._policy.predict_action(**payload)
             except Exception as e:
                 logging.exception("Policy inference error (request_id=%s)", req_id)
-                logging.exception(e)
 
                 return {
                     "status": "error",
@@ -125,6 +286,8 @@ class WebsocketPolicyServer:
                     "type": "inference_result",
                     "request_id": req_id,
                     "error": {
+                        "code": "POLICY_INFERENCE_ERROR",
+                        "type": type(e).__name__,
                         "message": str(e),
                     },
                 }
@@ -144,7 +307,11 @@ class WebsocketPolicyServer:
                 "ok": False,
                 "type": "unknown",
                 "request_id": req_id,
-                "error": {"message": f"Unsupported message type '{mtype}'"},
+                "error": {
+                    "code": "UNSUPPORTED_MESSAGE_TYPE",
+                    "type": "ValueError",
+                    "message": f"Unsupported message type '{mtype}'",
+                },
             }
 
 

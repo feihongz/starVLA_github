@@ -341,6 +341,26 @@ class PolicyNormProcessor:
         return list(self._state_keys)
 
     @property
+    def action_key_dims(self) -> Dict[str, int]:
+        return dict(self._action_key_dims)
+
+    @property
+    def state_key_dims(self) -> Dict[str, int]:
+        return dict(self._state_key_dims)
+
+    @property
+    def action_dim(self) -> int:
+        """Total flattened action dimension, including multi-dimensional keys."""
+
+        return sum(self._action_key_dims.values())
+
+    @property
+    def state_dim(self) -> int:
+        """Total flattened state dimension, including multi-dimensional keys."""
+
+        return sum(self._state_key_dims.values())
+
+    @property
     def unnorm_key(self) -> str:
         return self._unnorm_key
 

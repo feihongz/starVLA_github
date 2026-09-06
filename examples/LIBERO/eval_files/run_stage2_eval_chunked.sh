@@ -13,6 +13,12 @@ GPU_ID="${2:-9}"
 BASE_PORT="${3:-18620}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PERSISTENT_RUNNER="${SCRIPT_DIR}/run_stage2_eval_chunked_persistent.sh"
+if [[ ! -x "${PERSISTENT_RUNNER}" ]]; then
+  echo "[stage2_eval] ERROR: hardened persistent runner is missing or not executable: ${PERSISTENT_RUNNER}" >&2
+  exit 1
+fi
+exec "${PERSISTENT_RUNNER}" "$@"
 if [[ -n "${TASK_SUITES_OVERRIDE:-}" ]]; then
   read -r -a TASK_SUITES <<< "${TASK_SUITES_OVERRIDE}"
 else

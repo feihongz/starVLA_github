@@ -16,6 +16,7 @@ import json
 import os
 import re
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Tuple
 
@@ -26,7 +27,7 @@ import torch.distributed as dist
 import wandb
 from accelerate import Accelerator, DeepSpeedPlugin
 from accelerate.logging import get_logger
-from accelerate.utils import set_seed
+from accelerate.utils import InitProcessGroupKwargs, set_seed
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -61,10 +62,42 @@ def barrier_if_distributed() -> None:
 
 def build_accelerator(cfg) -> Accelerator:
     gradient_accumulation_steps = int(getattr(cfg.trainer, "gradient_accumulation_steps", 1))
-    deepspeed_plugin = DeepSpeedPlugin(gradient_accumulation_steps=gradient_accumulation_steps)
+    gradient_clipping = getattr(cfg.trainer, "gradient_clipping", None)
+    reduce_bucket_size = int(os.environ.get("DEEPSPEED_REDUCE_BUCKET_SIZE", "100000000"))
+    allgather_bucket_size = int(os.environ.get("DEEPSPEED_ALLGATHER_BUCKET_SIZE", str(reduce_bucket_size)))
+    distributed_timeout_seconds = int(os.environ.get("TORCH_DISTRIBUTED_TIMEOUT_SECONDS", "7200"))
+    offload_optimizer_device = os.environ.get("DEEPSPEED_OFFLOAD_OPTIMIZER_DEVICE", "none")
+    offload_param_device = os.environ.get("DEEPSPEED_OFFLOAD_PARAM_DEVICE", "none")
+
+    ds_config = {
+        "train_batch_size": "auto",
+        "train_micro_batch_size_per_gpu": "auto",
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "zero_optimization": {
+            "stage": 2,
+            "offload_optimizer": {"device": offload_optimizer_device, "nvme_path": None},
+            "offload_param": {"device": offload_param_device, "nvme_path": None},
+            "reduce_bucket_size": reduce_bucket_size,
+            "allgather_bucket_size": allgather_bucket_size,
+            "stage3_gather_16bit_weights_on_model_save": False,
+        },
+        "bf16": {"enabled": True},
+        "fp16": {"enabled": False},
+        "zero_allow_untested_optimizer": True,
+    }
+    if gradient_clipping is not None:
+        ds_config["gradient_clipping"] = float(gradient_clipping)
+
+    deepspeed_plugin = DeepSpeedPlugin(
+        hf_ds_config=ds_config,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        gradient_clipping=gradient_clipping,
+    )
+    process_group_kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=distributed_timeout_seconds))
     accelerator = Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,
         deepspeed_plugin=deepspeed_plugin,
+        kwargs_handlers=[process_group_kwargs],
     )
     accelerator.print(accelerator.state)
     return accelerator
@@ -320,7 +353,7 @@ class VLATrainer(TrainerUtils):
         policy = getattr(self.config.trainer, "checkpoint_retention_policy", "all")
         if policy in (None, "all", "none"):
             return
-        if policy != "latest_and_best":
+        if policy not in {"latest_and_best", "latest_and_range"}:
             raise ValueError(f"Unsupported checkpoint_retention_policy `{policy}`.")
 
         keep_latest = int(getattr(self.config.trainer, "checkpoint_keep_latest", 1))
@@ -339,15 +372,26 @@ class VLATrainer(TrainerUtils):
         if keep_latest > 0:
             keep_names.update(path.name for _, path in checkpoints[-keep_latest:])
 
-        scored = []
-        for step, path in checkpoints:
-            metric = scores.get(path.name, {}).get("metrics", {}).get(metric_name)
-            if metric is None:
-                continue
-            scored.append((float(metric), step, path))
-        scored.sort(key=lambda item: item[0], reverse=(metric_mode == "max"))
-        if keep_best > 0:
-            keep_names.update(path.name for _, _, path in scored[:keep_best])
+        if policy == "latest_and_range":
+            start_step = int(getattr(self.config.trainer, "checkpoint_archive_start_step", 0) or 0)
+            end_step = int(getattr(self.config.trainer, "checkpoint_archive_end_step", 0) or 0)
+            interval = int(getattr(self.config.trainer, "checkpoint_archive_interval", 0) or 0)
+            if start_step > 0 and end_step >= start_step and interval > 0:
+                keep_names.update(
+                    path.name
+                    for step, path in checkpoints
+                    if start_step <= step <= end_step and (step - start_step) % interval == 0
+                )
+        else:
+            scored = []
+            for step, path in checkpoints:
+                metric = scores.get(path.name, {}).get("metrics", {}).get(metric_name)
+                if metric is None:
+                    continue
+                scored.append((float(metric), step, path))
+            scored.sort(key=lambda item: item[0], reverse=(metric_mode == "max"))
+            if keep_best > 0:
+                keep_names.update(path.name for _, _, path in scored[:keep_best])
 
         deleted = []
         for _, path in checkpoints:

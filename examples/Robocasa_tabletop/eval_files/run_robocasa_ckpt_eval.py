@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import os
 import re
@@ -29,16 +30,50 @@ def write_json(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def wait_for_port(host: str, port: int, timeout_s: float) -> None:
-    deadline = time.time() + timeout_s
+def server_log_tail(log_path: Path | None, max_lines: int = 40) -> str:
+    if log_path is None:
+        return "<server log unavailable>"
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as handle:
+            lines = deque(handle, maxlen=max_lines)
+    except OSError as exc:
+        return f"<failed to read {log_path}: {exc}>"
+    return "".join(lines).rstrip() or "<empty server log>"
+
+
+def wait_for_port(
+    host: str,
+    port: int,
+    timeout_s: float,
+    *,
+    process: subprocess.Popen | None = None,
+    log_path: Path | None = None,
+) -> None:
+    deadline = time.monotonic() + timeout_s
     last_error = None
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
+        if process is not None:
+            return_code = process.poll()
+            if return_code is not None:
+                raise EvalFailed(
+                    f"Policy server exited before opening {host}:{port} "
+                    f"(rc={return_code}). See {log_path}.\n"
+                    f"--- server.log tail ---\n{server_log_tail(log_path)}"
+                )
         try:
             with socket.create_connection((host, port), timeout=2.0):
                 return
         except OSError as exc:
             last_error = exc
-            time.sleep(2.0)
+        if process is not None:
+            return_code = process.poll()
+            if return_code is not None:
+                raise EvalFailed(
+                    f"Policy server exited before opening {host}:{port} "
+                    f"(rc={return_code}). See {log_path}.\n"
+                    f"--- server.log tail ---\n{server_log_tail(log_path)}"
+                )
+        time.sleep(0.2 if process is not None else 2.0)
     raise EvalFailed(f"Policy server did not open {host}:{port} within {timeout_s}s: {last_error}")
 
 
@@ -255,7 +290,13 @@ def run_attempt(args: argparse.Namespace, attempt_dir: Path) -> dict:
     with server_log.open("w", encoding="utf-8") as log:
         server = subprocess.Popen(server_cmd, stdout=log, stderr=subprocess.STDOUT, env=server_env, cwd=args.repo_root)
     try:
-        wait_for_port(args.host, args.port, args.server_ready_timeout)
+        wait_for_port(
+            args.host,
+            args.port,
+            args.server_ready_timeout,
+            process=server,
+            log_path=server_log,
+        )
         sim_rc = run_process(sim_cmd, env=sim_env, log_path=sim_log, timeout_s=args.sim_timeout, cwd=args.repo_root)  # type: ignore[arg-type]
         if sim_rc != 0:
             raise EvalFailed(f"simulation_env.py exited with code {sim_rc}. See {sim_log}")
